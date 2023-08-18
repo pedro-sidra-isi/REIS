@@ -1,0 +1,15 @@
+[build-system] 
+requires = ["setuptools>=61.0"] 
+build-backend = "setuptools.build_meta" 
+
+[project] 
+name = "reis" 
+version = "0.1.0" 
+description = "Point Cloud Explorer" 
+authors = [{ name = "Pedro Sidra de Freitas", email = "pedro.sidra@senairs.org.br" }] 
+maintainers = [{ name = "Pedro Sidra de Freitas", email = "pedro.sidra@senairs.org.br" }] 
+readme = "README.md" 
+license = { file = "LICENSE" } 
+keywords = ["point cloud", "dash" ] 
+classifiers = ["Programming Language :: Python :: 3", "Operating System :: OS Independent"] 
+requires-python = ">=3.7" 

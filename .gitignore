@@ -1,0 +1,11 @@
+cache/
+__pycache__/
+*.csv
+*.json
+*.rar
+*.pcd
+
+#dirs
+build/
+dist/
+src/reis.egg-info/
