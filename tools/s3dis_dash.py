@@ -13,22 +13,24 @@ import diskcache
 
 cache = diskcache.Cache("./cache")
 
-S3DIS_CLASSES = (
-    "ceiling",
-    "floor",
-    "wall",
-    "beam",
-    "column",
-    "window",
-    "door",
-    "chair",
-    "table",
-    "bookcase",
-    "sofa",
-    "board",
-    "clutter",
-    "background",
-)
+S3DIS_CLASSES_MAP = {
+        0:"ceiling",
+        1:"floor",
+        2:"wall",
+        3:"beam",
+        4:"column",
+        5:"window",
+        6:"door",
+        7:"chair",
+        8:"table",
+        9:"bookcase",
+        10:"sofa",
+        11:"board",
+        12:"clutter",
+        13:"background",
+        14:"None",
+}
+S3DIS_CLASSES = list(S3DIS_CLASSES_MAP.values())
 
 
 def get_args():
@@ -65,7 +67,10 @@ def load_infer_pcd(path):
         df["instance_pred"].isin(unique_pred[pred_count < 100])
     ] = -1
 
-    label_to_class = dict(list(enumerate(S3DIS_CLASSES)))
+    df["instance_pred"].loc[ df["instance_pred"] == -1 ] = 14
+    df["instance_gt"].loc[ df["instance_gt"] == -1 ] = 14
+
+    label_to_class = S3DIS_CLASSES_MAP
 
     # Create string columns for classifications
     df["class_gt"] = df["semantic_gt"].astype(int).map(label_to_class)
@@ -75,7 +80,7 @@ def load_infer_pcd(path):
     df["class_instance_pred"] = (
         (df["instance_pred"].astype(int) // 1000).map(label_to_class).astype(str)
     )
-    df["class_instance_pred"].loc[df["instance_pred"] == -1] = "None"
+    # df["class_instance_pred"].loc[df["instance_pred"] == -1] = "None"
 
     df["class_errors"] = df["semantic_pred"] != df["semantic_gt"]
     df["class_instance_errors"] = df["class_instance_pred"] != df["class_gt"]

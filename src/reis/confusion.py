@@ -144,8 +144,11 @@ def plot_confusion_matrix(confusion_mat, class_names):
         yaxis_title="Ground Truth",
         font_size=12,
         autosize=True,
-        margin=dict(l=0, r=0, t=100, b=0),
+        margin=dict(l=0, r=0, t=0, b=0),
         plot_bgcolor="white",
+    )
+    fig.update_traces(
+        hovertemplate="Ground Truth:<b>\t%{x}</b><br>Predicted:      \t<b>%{y}</b><extra></extra>",
     )
     return fig
 

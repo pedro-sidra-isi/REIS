@@ -25,6 +25,7 @@ from dash import Dash, Input, Output, html, dcc, State
 import dash_bootstrap_components as dbc
 from pathlib import Path
 import pandas as pd
+from diskcache import Cache
 
 ## Diskcache
 from dash.long_callback import DiskcacheLongCallbackManager
@@ -297,7 +298,7 @@ class PointCloudDashboard(metaclass=Singleton):
                             [
                                 html.H2(f"Point Cloud Visualization"),
                                 html.H3(f"{self.title}"),
-                                # html.Hr(),
+                                html.Hr(),
                                 dcc.Loading(plot),
                             ],
                             md=9,
@@ -514,22 +515,31 @@ class InferPointCloudDashboard(PointCloudDashboard):
         if self.instance:
             confusion_tab = dbc.Tab(
                 label="Confusion Matrix",
-                children=dcc.Graph(
-                    id="confusion_mtx",  # config={"displayModeBar": False}
-                    # style={"width": "70vw", "height": "90vh"},
-                ),
+                children=[
+                    dbc.Label(f"Instance Detection Matrix @25%"),
+                    dcc.Graph(
+                        id="confusion_mtx",  # config={"displayModeBar": False}
+                        # style={"width": "70vw", "height": "90vh"},
+                    ),
+                    html.Hr(),
+                    html.Label("Crop instances by", id="instances_label"),
+                    dbc.Select(
+                        {
+                            "instance_gt": "Ground-Truth",
+                            "instance_pred": "Predicted",
+                        },
+                        value="instance_gt",
+                        id="instances_dropdown",
+                    ),
+                    dash_table.DataTable(
+                        [{}],
+                        id="confusion_table",
+                    ),
+                ],
             )
             side_col_members.append(confusion_tab)
 
-        side_col_members.append(html.H4("Instances", id="instances_label"))
-        side_col_members.append(
-            dash_table.DataTable(
-                [{}],
-                id="confusion_table",
-            )
-        )
-
-        side_col = dbc.Col(dbc.Card(children=side_col_members, body=True), md=3)
+        side_col = dbc.Col(dbc.Tabs(children=side_col_members), md=3)
 
         main_view = dcc.Graph(
             id="scatter_fig",
@@ -538,9 +548,6 @@ class InferPointCloudDashboard(PointCloudDashboard):
 
         figure_col = dbc.Col(
             [
-                html.H1(f"Point Cloud Inference Visualization"),
-                html.H4(f"{self.title}"),
-                html.Hr(),
                 dbc.Row(
                     [
                         dcc.Loading([main_view]),
@@ -554,6 +561,9 @@ class InferPointCloudDashboard(PointCloudDashboard):
         return dbc.Container(
             fluid=True,
             children=[
+                html.H1(f"Point Cloud Inference Visualization"),
+                html.H4(f"{self.title}"),
+                html.Hr(),
                 dbc.Row(
                     [side_col, figure_col],
                     align="top",
@@ -634,6 +644,18 @@ class InferPointCloudDashboard(PointCloudDashboard):
         return info
 
     def load_info(self, scenes_folder, classes):
+        info_key = f"{scenes_folder}{str(classes)}"
+
+        with Cache(cache.directory) as reference:
+            if info_key in reference:
+                data = reference.get(info_key)
+            else:
+                data = self.get_info(scenes_folder, classes)
+                reference[info_key] = data
+
+        self.infer_info, self.confusion_info, self.mtx = data
+
+    def get_info(self, scenes_folder, classes):
         files = sorted(list(Path(scenes_folder).glob(f"*{self.scenes_filetype}")))
         mappings = []
         print("[INFO] building confusion matrix....")
@@ -643,23 +665,37 @@ class InferPointCloudDashboard(PointCloudDashboard):
             mapper = p.imap(get_confusion_info_func, files)
             mappings = list(tqdm(mapper, total=len(files)))
 
-        self.infer_info = pd.concat(mappings)
+        infer_info = pd.concat(mappings)
 
-        self.confusion_info, self.mtx, self.infer_info = process_confusion_data(
-            self.infer_info,
+        confusion_info, mtx, infer_info = process_confusion_data(
+            infer_info,
             class_map={i: c for i, c in enumerate(classes)},  # type:ignore
             sem2ins_classes=self.sem2ins_classes,
         )
 
-    def display_click_data(self, gt, pred, color, class_filter, shade_col, hover_list):
+        return infer_info, confusion_info, mtx
+
+    def display_click_data(
+        self,
+        gt,
+        pred,
+        color,
+        class_filter,
+        shade_col,
+        hover_list,
+        instances_by="instance_gt",
+    ):
         self = PointCloudDashboard.get()
         subset = self.infer_info.query(f"`true`==@gt and pred==@pred")
+
+        instances_by = instances_by if gt != FP_NAME else "instance_pred"
+        instances_by = instances_by if pred != FN_NAME else "instance_gt"
 
         point_clouds, instance_info = ut.get_cm_samples_from_files(
             subset,
             folder=self.scenes_folder,
             file_format=self.scenes_format,
-            instance_col="instance_gt" if gt != FP_NAME else "instance_pred",
+            instance_col=instances_by,
         )
 
         hover_list.append("Row")
@@ -722,13 +758,12 @@ class InferPointCloudDashboard(PointCloudDashboard):
                 Input(component_id="scene_dropdown", component_property="value"),
                 Input(component_id="shade_dropdown", component_property="value"),
                 State(component_id="hover_dropdown", component_property="value"),
+                State(component_id="instances_dropdown", component_property="value"),
+                Input("confusion_mtx", "clickData"),
                 Input(component_id="btn_apply_hover", component_property="n_clicks"),
                 Input(component_id="btn_apply_filter", component_property="n_clicks"),
             ],
         ]
-
-        if self.instance:
-            callback_signature.append(Input("confusion_mtx", "clickData"))
 
         @PointCloudDashboard.app.long_callback(
             *callback_signature,
@@ -736,7 +771,14 @@ class InferPointCloudDashboard(PointCloudDashboard):
             manager=long_callback_manager,
         )
         def update_figure(
-            color, class_filter, scene, shade_col, hover_list, confusion_click, *args
+            color,
+            class_filter,
+            scene,
+            shade_col,
+            hover_list,
+            instances_by,
+            confusion_click,
+            *args
         ):
             self = PointCloudDashboard.get()
             start = time.time()
@@ -752,8 +794,15 @@ class InferPointCloudDashboard(PointCloudDashboard):
                 else:
                     raise PreventUpdate
 
+                print(instances_by)
                 fig, table_data = self.display_click_data(
-                    gt, pred, color, class_filter, shade_col, hover_list
+                    gt,
+                    pred,
+                    color,
+                    class_filter,
+                    shade_col,
+                    hover_list,
+                    instances_by=instances_by,
                 )
                 instances_label = f"GT: {gt}, Predicted: {pred}"
                 fig.update_layout(
