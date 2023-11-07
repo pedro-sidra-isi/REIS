@@ -14,21 +14,21 @@ import diskcache
 cache = diskcache.Cache("./cache")
 
 S3DIS_CLASSES_MAP = {
-        0:"ceiling",
-        1:"floor",
-        2:"wall",
-        3:"beam",
-        4:"column",
-        5:"window",
-        6:"door",
-        7:"chair",
-        8:"table",
-        9:"bookcase",
-        10:"sofa",
-        11:"board",
-        12:"clutter",
-        13:"background",
-        14:"None",
+    0: "ceiling",
+    1: "floor",
+    2: "wall",
+    3: "beam",
+    4: "column",
+    5: "window",
+    6: "door",
+    7: "chair",
+    8: "table",
+    9: "bookcase",
+    10: "sofa",
+    11: "board",
+    12: "clutter",
+    13: "background",
+    14: "None",
 }
 S3DIS_CLASSES = list(S3DIS_CLASSES_MAP.values())
 
@@ -67,8 +67,8 @@ def load_infer_pcd(path):
         df["instance_pred"].isin(unique_pred[pred_count < 100])
     ] = -1
 
-    df["instance_pred"].loc[ df["instance_pred"] == -1 ] = 14
-    df["instance_gt"].loc[ df["instance_gt"] == -1 ] = 14
+    df["instance_pred"].loc[df["instance_pred"] == -1] = 14
+    df["instance_gt"].loc[df["instance_gt"] == -1] = 14
 
     label_to_class = S3DIS_CLASSES_MAP
 
@@ -123,13 +123,13 @@ if __name__ == "__main__":
     scenes_folder = args.path
 
     if scenes_folder is None:
-        url = "https://drive.google.com/uc?id=1mO2DiE5oRJEm3BeFO-Q7X_nGqRbqtR5L"
+        url = "https://drive.google.com/uc?id=1X8KHGU6e_za4GtB0EfPQj8V5W5secjIZ"
         rar_path = gdown.cached_download(url)
-        data_path = Path(rar_path).parent
+        data_path = Path(rar_path).parent / "s3dis_bg"
 
         patoolib.extract_archive(rar_path, outdir=data_path, interactive=False)
 
-        scenes_folder = str(data_path / "s3dis_bg")
+        scenes_folder = data_path
 
     scenes_format = "pcd"
 
