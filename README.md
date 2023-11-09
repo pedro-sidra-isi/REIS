@@ -2,7 +2,8 @@
 
 Code for the paper "REIS: A Visual Analytics Tool for Rendering and Exploring Instance Segmentation of Point Clouds"
 
-This work started as a final project for CMP596, see presentation [here](https://docs.google.com/presentation/d/1GWUrdDCbHLROz9JThbOdXl3evL4CjDpOlCe82D2A9X8/edit?usp=sharing).
+This work was presented at SIBGRAPI 2023, see presentation [here]([https://docs.google.com/presentation/d/1cweoimZlXPxmpqE3er2ZNStR14ouMLzgxFKx_WkDI48/edit?usp=drivesdk]).
+
 
 ## Installation
 
