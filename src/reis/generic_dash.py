@@ -5,7 +5,6 @@ from multiprocessing import Pool
 from tqdm import tqdm
 import colorsys
 import numpy as np
-import json
 import functools
 from pathlib import Path
 from typing import Type, Optional
@@ -25,15 +24,6 @@ from dash import Dash, Input, Output, html, dcc, State
 import dash_bootstrap_components as dbc
 from pathlib import Path
 import pandas as pd
-from diskcache import Cache
-
-## Diskcache
-from dash.long_callback import DiskcacheLongCallbackManager
-
-import diskcache
-
-cache = diskcache.Cache("./cache")
-long_callback_manager = DiskcacheLongCallbackManager(cache)
 
 
 import plotly.express as px
@@ -46,6 +36,13 @@ DASH = Dash
 # change to jupyter
 # from jupyter_dash import JupyterDash
 # DASH=JupyterDash
+
+## Diskcache
+from diskcache import Cache
+from dash.long_callback import DiskcacheLongCallbackManager
+
+cache = Cache("./cache")
+long_callback_manager = DiskcacheLongCallbackManager(cache)
 
 
 def hsv2rgb(h, s, v):
@@ -72,22 +69,21 @@ class Singleton(type):
         return cls._instances[cls]
 
 
-class fake_color_map(object):
-    def __getitem__(self, items):
-        return hex(items)
-
-    def copy(self):
-        return fake_color_map()
-
-
 the_instance = None
 
 
 class PointCloudDashboard(metaclass=Singleton):
+    """
+    REIS Point Cloud Dashboard for exploring instance segmentation results.
+    Based on a plotly.Dash app, this class encapsulates html layout and backend functionality
+    (graph generation, pre-processing, scene loading)
+    """
+
     app = DASH(__name__, external_stylesheets=[dbc.themes.FLATLY])
 
     @staticmethod
     def get() -> "PointCloudDashboard":
+        """Return the static Singleton"""
         global the_instance
         return the_instance
 
@@ -100,7 +96,29 @@ class PointCloudDashboard(metaclass=Singleton):
         colors=None,
         point_contour=False,
         instance=True,
+        sem2ins_classes=[],
     ):
+        """
+        :param load_scene_func: a Python method that receives one argument, 'path', a path to a local file,
+                and returns a pd.DataFrame containing the PointCloud data from that file. The dataframe must contain the following columns:
+                    * x;y;z
+                    * r;g;b
+                    * semantic_pred
+                    * semantic_pred_confs
+                    * semantic_gt
+                    * instance_pred: encoded as 1000*instance_semantic_label + instance_id
+                    * instance_gt: encoded as 1000*instance_semantic_label + instance_id
+                note: instance_pred and semantic_pred are redundant on purpose. Instance_pred encodes the semantic label because some methods
+                might yield different point-wise and instance-wise semantic predictions, e.g. softgroup
+        :param scenes_folder: folder containing the scenes to load. The dashboard will load them using `load_scene_func`
+        :param classes: list of semantic classes
+        :param point_contour: use a contour on points for visibility
+        :param instance: True to use instance predictions from a model to build an instance detection matrix
+        :param sem2ins_classes: skip these classes in terms of instance predictions
+        """
+        self.sem2ins_classes = sem2ins_classes
+        self.instance = instance
+
         global the_instance
         the_instance = self
 
@@ -172,16 +190,26 @@ class PointCloudDashboard(metaclass=Singleton):
         self.setup_fixed_columns()
         self.setup_interface()
 
+        if self.instance:
+            self.load_info(scenes_folder=scenes_folder, classes=classes)
+        else:
+            self.infer_info = pd.DataFrame()
+            self.confusion_info = pd.DataFrame()
+            self.mtx = np.zeros((10, 10))
+            self.infer_info = pd.DataFrame()
+
     def setup_fixed_columns(self):
         self.color_cols = ["rgb", "instance", "class_gt"]
-        self.shade_cols = ["gray", "None"]
+        self.shade_cols = ["gray", "semantic_pred_confs", "None"]
 
     def setup_interface(self):
-        self.app.layout = self.create_layout()
-        self.setup_figure_callback()
+        PointCloudDashboard.app.layout = self.create_layout()
         self.setup_control_callbacks()
+        self.setup_figure_callback()
+        self.setup_confusion_callbacks()
 
     def create_controls(self):
+        """Define the html components to control the point cloud view"""
         inputgroup_style = {"margin-bottom": "0.5em", "width": "100%"}
         dropdown_style = {}
         inputText_style = {"width": "90px"}
@@ -286,24 +314,73 @@ class PointCloudDashboard(metaclass=Singleton):
         ]
 
     def create_layout(self):
-        plot = dcc.Graph(id="scatter_fig", style={"width": "80vw", "height": "80vh"})
+        """Define the layout of the REIS page"""
+        controls = self.create_controls()
+
+        control_tab = dbc.Tab(
+            label="Controls", children=controls, style={"justify-content": "center"}
+        )
+
+        side_col_members = [control_tab]
+        if self.instance:
+            confusion_tab = dbc.Tab(
+                label="Confusion Matrix",
+                children=[
+                    dbc.Label(f"Instance Detection Matrix @25%"),
+                    dcc.Graph(
+                        id="confusion_mtx",
+                    ),
+                    html.Hr(),
+                    dbc.InputGroup(
+                        children=[
+                            dbc.InputGroupText(
+                                "Crop instances by",
+                            ),
+                            dbc.Select(
+                                {
+                                    "instance_gt": "Ground-Truth",
+                                    "instance_pred": "Predicted",
+                                },
+                                value="instance_gt",
+                                id="instances_dropdown",
+                            ),
+                        ],
+                    ),
+                    html.Label("Instances Table", id="instances_label"),
+                    dash_table.DataTable(
+                        [{}],
+                        id="confusion_table",
+                    ),
+                ],
+            )
+            side_col_members.append(confusion_tab)
+
+        side_col = dbc.Col(dbc.Tabs(children=side_col_members), md=3)
+
+        main_view = dcc.Graph(
+            id="scatter_fig",
+            style={"width": "70vw", "height": "90vh"},
+        )
+
+        figure_col = dbc.Col(
+            [
+                dbc.Row(
+                    [
+                        dcc.Loading([main_view]),
+                    ]
+                ),
+            ],
+            md=9,
+        )
 
         return dbc.Container(
             fluid=True,
             children=[
+                html.H1(f"Point Cloud Inference Visualization"),
+                html.H4(f"{self.title}"),
+                html.Hr(),
                 dbc.Row(
-                    [
-                        dbc.Col(self.create_controls(), md=3),
-                        dbc.Col(
-                            [
-                                html.H2(f"Point Cloud Visualization"),
-                                html.H3(f"{self.title}"),
-                                html.Hr(),
-                                dcc.Loading(plot),
-                            ],
-                            md=9,
-                        ),
-                    ],
+                    [side_col, figure_col],
                     align="top",
                 ),
                 dcc.Store(id="local_store", storage_type="memory"),
@@ -320,6 +397,7 @@ class PointCloudDashboard(metaclass=Singleton):
     @functools.lru_cache(maxsize=3)
     def get_scene(self, scene, key="df"):
         result = self.load_scene(scene)
+        result = self.preprocess_scene(result)
 
         if not isinstance(result, dict):
             return result
@@ -329,15 +407,121 @@ class PointCloudDashboard(metaclass=Singleton):
         else:
             return result
 
+    def preprocess_scene(self, df):
+        # Solve NaN and other numerical issues
+        df["instance_pred"] = df["instance_pred"].fillna(-1)
+        df["instance_gt"] = df["instance_gt"].fillna(-1)
+        df["instance_pred"].loc[df["instance_pred"] > 4e6] = -1
+        df["instance_gt"].loc[df["instance_gt"] > 4e6] = -1
+        df["instance_gt"] = df["instance_gt"].fillna(-1)
+
+        label_to_class = {i: clss for i, clss in enumerate(self.classes)}
+
+        # Create string columns for classifications
+        df["class_gt"] = df["semantic_gt"].astype(int).map(label_to_class)
+        df["class_pred"] = df["semantic_pred"].astype(int).map(label_to_class)
+
+        if self.instance:
+            # Instance is encoded as 1000*label + id
+            df["class_instance_pred"] = (
+                (df["instance_pred"].astype(int) // 1000)
+                .map(label_to_class)
+                .astype(str)
+            )
+
+            df["class_errors"] = df["semantic_pred"] != df["semantic_gt"]
+            df["class_instance_errors"] = df["class_instance_pred"] != df["class_gt"]
+
+        ids = (
+            df.groupby("instance_pred")
+            .first()  # get a single row for each predicted instance
+            .reset_index()  # Keep the "instance_pred" column
+            .groupby("class_instance_pred")  # Get a group for each predicted class
+            .apply(
+                lambda df: df.reset_index()
+            )  # Return a stacked df with the predicted class as a column
+            .loc[
+                :, "instance_pred"
+            ]  # We want to map each "instance_pred" to a sequential id class-by-class
+            .reset_index(1)
+            .rename(
+                columns={"level_1": "object_id"}
+            )  # Instances will be mapped sequentially inside each class
+        )
+
+        # Helper columns to visualize object ids
+        instance_pred_to_object_id = {
+            d["instance_pred"]: d["object_id"] for d in ids.to_dict("records")
+        }
+        df["object_id"] = df["instance_pred"].map(instance_pred_to_object_id)
+        df["object_pred"] = (
+            df["class_instance_pred"].astype(str) + "_" + df["object_id"].astype(str)
+        )
+
+        df = df.drop(columns=["semantic_gt", "semantic_pred"])
+        df = df.reindex(sorted(df.columns), axis=1).reset_index(drop=True)
+        return df
+
     def scene_scatterplot(self, df, color, shade_col, hover_data=None):
+        """Handles point cloud plotting according to the `color_by` and `shade_col`"""
+        self = PointCloudDashboard.get()
+        fig = None
+
+        # Comparisson
+        if color == "class_errors" or color == "class_instance_errors":
+            pred_col = (
+                "class_pred" if color == "class_errors" else "class_instance_pred"
+            )
+            traces = ut.plot_semantic_errors(
+                df,
+                pred_col=pred_col,
+                column=color,
+                point_contour=self.point_contour,
+                plot_wrongs=True,
+            )
+
+            fig = go.Figure(
+                layout=go.Layout(
+                    scene=dict(aspectmode="data"),
+                )
+            )
+            fig.add_traces(traces)
+
+        # Semantic classes + bounding boxes
+        if color == "object_pred":
+            df_ = df.query("class_instance_pred not in @self.sem2ins_classes")
+            transform = ut.get_PCA_transform(df_, label_col="`class_gt`", all=True)
+            df_ = ut.apply_transform(df_, transform)
+
+            fig = ut.plot_discrete_shaded(
+                df_,
+                discrete_col="class_instance_pred",
+                colors=self.colors_map,  # type:ignore
+                point_contour=self.point_contour,  # type:ignore
+                shade_col=shade_col if shade_col != "None" else "gray",
+                hover_data=hover_data,
+            )
+
+            df_ = df_.query("class_instance_pred not in @self.sem2ins_classes")
+            min = df_.groupby("object_pred").min()[["x", "y", "z"]].to_numpy()
+            max = df_.groupby("object_pred").max()[["x", "y", "z"]].to_numpy()
+
+            traces = []
+            for i_min, i_max in zip(min, max):
+                cube = ut.draw_cube(i_min, i_max)
+                fig.add_trace(cube)
+
+        # RGB colors (with K-Means color clustering for efficiency)
         if color == "rgb":
             trace = ut.plot_rgb_clustered(df)
             fig = go.Figure(
                 data=[trace], layout=go.Layout(scene=dict(aspectmode="data"))
             )
-        else:
+
+        if fig == None:
             is_discrete = len(df[color].unique()) < 30
 
+            # Standard discrete plot
             if is_discrete:
                 fig = ut.plot_discrete_scatter(
                     df,
@@ -347,38 +531,13 @@ class PointCloudDashboard(metaclass=Singleton):
                     shade_col=shade_col,
                     hover_data=hover_data,
                 )
+            # Standard continuous plot
             else:
                 fig = ut.plot_continuous_scatter(
                     df, color, point_contour=self.point_contour, hover_data=hover_data
                 )
 
         return fig
-
-    def setup_figure_callback(self):
-        @PointCloudDashboard.app.long_callback(
-            Output(component_id="scatter_fig", component_property="figure"),
-            Input(component_id="color_dropdown", component_property="value"),
-            State(component_id="filter_list", component_property="value"),
-            Input(component_id="scene_dropdown", component_property="value"),
-            Input(component_id="shade_dropdown", component_property="value"),
-            State(component_id="hover_dropdown", component_property="value"),
-            Input(component_id="btn_apply_hover", component_property="n_clicks"),
-            Input(component_id="btn_apply_filter", component_property="n_clicks"),
-            prevent_initial_call=True,
-            manager=long_callback_manager,
-        )
-        def figure_callback(color, class_filter, scene, shade_col, hover_list, _, __):
-            start = time.time()
-
-            fig = PointCloudDashboard.draw_point_cloud_scene(
-                scene, color, class_filter, shade_col, hover_list
-            )
-            print(f"Fig build took {time.time()-start} seconds")
-            fig.update_layout(
-                title=dict(text=f"{Path(scene).stem}, {color}"), uirevision=scene
-            )
-
-            return fig
 
     def draw_point_cloud_scene(scene, color, class_filter, shade_col, hover_list):
         self = PointCloudDashboard.get()
@@ -424,208 +583,6 @@ class PointCloudDashboard(metaclass=Singleton):
 
         fig.update_scenes(xaxis_visible=False, yaxis_visible=False, zaxis_visible=False)
         return fig
-
-    def setup_control_callbacks(self):
-        @PointCloudDashboard.app.callback(
-            Output(component_id="scene_dropdown", component_property="value"),
-            State(component_id="scene_dropdown", component_property="options"),
-            State(component_id="scene_dropdown", component_property="value"),
-            Input(component_id="btn_next_scene", component_property="n_clicks"),
-            prevent_initial_call=False,
-        )
-        def next_scene(options, value, btn):
-            self = PointCloudDashboard.get()
-            if btn:
-                list_options = [d["value"] for d in options]  # type:ignore
-                i_cur = list_options.index(value)
-                o = options[i_cur + 1]["value"]  # type:ignore
-                return o
-            else:
-                return value
-
-        @PointCloudDashboard.app.callback(
-            Output(component_id="hover_dropdown", component_property="options"),
-            Input(component_id="scene_dropdown", component_property="value"),
-        )  # type:ignore
-        def update_hover_options(scene):
-            self = PointCloudDashboard.get()
-            df = self.get_scene(scene)  # type:ignore
-            return df.columns  # type:ignore
-
-        @PointCloudDashboard.app.callback(
-            Output(component_id="color_dropdown", component_property="value"),
-            State(component_id="color_dropdown", component_property="options"),
-            State(component_id="color_dropdown", component_property="value"),
-            Input(component_id="btn_next_color", component_property="n_clicks"),
-            prevent_initial_call=True,
-        )
-        def next_color(options, value, btn):
-            i_cur = options.index(value)  # type:ignore
-            return options[min(i_cur + 1, len(options) - 1)]  # type:ignore
-
-        @PointCloudDashboard.app.callback(
-            Output(component_id="color_dropdown", component_property="options"),
-            Input(component_id="scene_dropdown", component_property="value"),
-        )
-        def update_scalar_fields(scene):
-            self = PointCloudDashboard.get()
-            df = self.get_scene(scene)  # type:ignore
-
-            unintersting_cols = {"x", "y", "z", "r", "g", "b"}
-            cols = [c for c in df.columns if c not in unintersting_cols]  # type:ignore
-
-            return cols
-
-
-class InferPointCloudDashboard(PointCloudDashboard):
-    def __init__(self, sem2ins_classes=[], *args, **kwargs):
-        self.sem2ins_classes = sem2ins_classes
-        self.instance = kwargs.get("instance")
-
-        super().__init__(*args, **kwargs)
-
-        if self.instance:
-            self.load_info(
-                scenes_folder=kwargs.get("scenes_folder"), classes=kwargs.get("classes")
-            )
-        else:
-            self.infer_info = pd.DataFrame()
-            self.confusion_info = pd.DataFrame()
-            self.mtx = np.zeros((10, 10))
-            self.infer_info = pd.DataFrame()
-
-    def setup_fixed_columns(self):
-        super().setup_fixed_columns()
-        self.shade_cols = ["gray", "semantic_pred_confs", "None"]
-
-    def setup_interface(self):
-        PointCloudDashboard.app.layout = self.create_layout()
-        self.setup_control_callbacks()
-        self.setup_figure_callback()
-        self.setup_confusion_callbacks()
-
-    def create_layout(self):
-        controls = super().create_controls()
-
-        control_tab = dbc.Tab(
-            label="Controls", children=controls, style={"justify-content": "center"}
-        )
-
-        side_col_members = [control_tab]
-        if self.instance:
-            confusion_tab = dbc.Tab(
-                label="Confusion Matrix",
-                children=[
-                    dbc.Label(f"Instance Detection Matrix @25%"),
-                    dcc.Graph(
-                        id="confusion_mtx",  # config={"displayModeBar": False}
-                        # style={"width": "70vw", "height": "90vh"},
-                    ),
-                    html.Hr(),
-                    html.Label("Crop instances by", id="instances_label"),
-                    dbc.Select(
-                        {
-                            "instance_gt": "Ground-Truth",
-                            "instance_pred": "Predicted",
-                        },
-                        value="instance_gt",
-                        id="instances_dropdown",
-                    ),
-                    dash_table.DataTable(
-                        [{}],
-                        id="confusion_table",
-                    ),
-                ],
-            )
-            side_col_members.append(confusion_tab)
-
-        side_col = dbc.Col(dbc.Tabs(children=side_col_members), md=3)
-
-        main_view = dcc.Graph(
-            id="scatter_fig",
-            style={"width": "70vw", "height": "90vh"},
-        )
-
-        figure_col = dbc.Col(
-            [
-                dbc.Row(
-                    [
-                        dcc.Loading([main_view]),
-                        # dcc.Loading([confusion_tab]),
-                    ]
-                ),
-            ],
-            md=9,
-        )
-
-        return dbc.Container(
-            fluid=True,
-            children=[
-                html.H1(f"Point Cloud Inference Visualization"),
-                html.H4(f"{self.title}"),
-                html.Hr(),
-                dbc.Row(
-                    [side_col, figure_col],
-                    align="top",
-                ),
-                dcc.Store(id="local_store", storage_type="memory"),
-            ],
-        )
-
-    def scene_scatterplot(self, df, color, shade_col, hover_data=None):
-        self = PointCloudDashboard.get()
-        fig = None
-
-        if color == "class_errors" or color == "class_instance_errors":
-            pred_col = (
-                "class_pred" if color == "class_errors" else "class_instance_pred"
-            )
-            traces = ut.plot_semantic_errors(
-                df,
-                pred_col=pred_col,
-                column=color,
-                point_contour=self.point_contour,
-                plot_wrongs=True,
-            )
-
-            fig = go.Figure(
-                layout=go.Layout(
-                    scene=dict(aspectmode="data"),
-                )
-            )
-            fig.add_traces(traces)
-
-        if color == "object_pred":
-            df_ = df  # .query(
-            #     "class_instance_pred not in @self.sem2ins_classes"
-            # )
-            transform = ut.get_PCA_transform(df_, label_col="`class_gt`", all=True)
-            df_ = ut.apply_transform(df_, transform)
-
-            fig = ut.plot_discrete_shaded(
-                df_,
-                discrete_col="class_instance_pred",
-                colors=self.colors_map,  # type:ignore
-                point_contour=self.point_contour,  # type:ignore
-                shade_col=shade_col if shade_col != "None" else "gray",
-                hover_data=hover_data,
-            )
-
-            df_ = df_.query("class_instance_pred not in @self.sem2ins_classes")
-            min = df_.groupby("object_pred").min()[["x", "y", "z"]].to_numpy()
-            max = df_.groupby("object_pred").max()[["x", "y", "z"]].to_numpy()
-
-            traces = []
-            for i_min, i_max in zip(min, max):
-                cube = ut.draw_cube(i_min, i_max)
-                fig.add_trace(cube)
-
-        if fig is None:
-            return super().scene_scatterplot(
-                df, color, shade_col=shade_col, hover_data=hover_data
-            )
-        else:
-            return fig
 
     def get_confusion_info(self, f, classes):
         df = self.get_scene(f)  # type:ignore
@@ -778,13 +735,13 @@ class InferPointCloudDashboard(PointCloudDashboard):
             hover_list,
             instances_by,
             confusion_click,
-            *args
+            *args,
         ):
             self = PointCloudDashboard.get()
             start = time.time()
 
             table_data = [{}]
-            instances_label = "Instances"
+            instances_label = "Instances Table"
             if "confusion_mtx" in ctx.triggered[0]["prop_id"]:
                 confusion_click = ctx.triggered[0]["value"]
 
@@ -794,7 +751,6 @@ class InferPointCloudDashboard(PointCloudDashboard):
                 else:
                     raise PreventUpdate
 
-                print(instances_by)
                 fig, table_data = self.display_click_data(
                     gt,
                     pred,

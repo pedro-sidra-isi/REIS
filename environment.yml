@@ -11,10 +11,11 @@ dependencies:
 - pandas=1.5.2
 
 - pip:
-  - git+https://github.com/maik-basso-isi/pypcd.git
+  - git+https://github.com/isisim/pypcd.git
   - dash[diskcache]
   - dash-bootstrap-components
   - patool
   - gdown
   - tqdm
   - scikit-learn
+  - -e .
