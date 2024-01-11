@@ -1,7 +1,3 @@
-> [!WARNING]  
-> This repo has migrated to [github.com/pedro-sidra-isi/REIS](https://github.com/pedro-sidra-isi/REIS)
-> **This page will not be updated!**
-
 # REIS
 
 Code for the paper "[REIS: A Visual Analytics Tool for Rendering and Exploring Instance Segmentation of Point Clouds](https://ieeexplore.ieee.org/document/10347129)"
